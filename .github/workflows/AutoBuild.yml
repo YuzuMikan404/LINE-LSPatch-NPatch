@@ -171,7 +171,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: patched-apks-${{ matrix.label }}
-          path: "*.apk"
+          path: |
+            ${{ matrix.label }}-LSPatch-Local.apk
+            ${{ matrix.label }}-LSPatch-Embed.apk
+            ${{ matrix.label }}-NPatch-Local.apk
+            ${{ matrix.label }}-NPatch-Embed.apk
           retention-days: 1
 
   # ==========================================
