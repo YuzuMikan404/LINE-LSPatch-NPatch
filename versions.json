@@ -1,4 +1,5 @@
-{ "version": "15.12.2", "label": "Stable" },
+[
+  { "version": "15.12.2", "label": "Stable" },
   { "version": "15.18.1", "label": "Beta" },
   { "version": "26.3.0", "label": "Experimental" }
 ]
