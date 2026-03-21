@@ -75,7 +75,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # ★ここで前のジョブで読み込んだ versions.json を展開！
         include: ${{ fromJson(needs.check-release.outputs.matrix) }}
 
     steps:
@@ -92,24 +91,8 @@ jobs:
         run: |
           mkdir -p keystore
           cp "${{ env.KEYSTORE_FILE }}" keystore/original.jks
-
-          keytool -importkeystore \
-            -srckeystore keystore/original.jks \
-            -srcstoretype JKS \
-            -destkeystore keystore/keystore.p12 \
-            -deststoretype PKCS12 \
-            -srcstorepass "${{ env.STORE_PASSWORD }}" \
-            -deststorepass "${{ env.STORE_PASSWORD }}" \
-            -srcalias "${{ env.KEY_ALIAS }}" \
-            -destalias "${{ env.KEY_ALIAS }}" \
-            -srckeypass "${{ env.KEY_PASSWORD }}" \
-            -destkeypass "${{ env.KEY_PASSWORD }}" > /dev/null 2>&1 || echo "⚠️ PKCS12変換失敗"
-
-          if [ -f "keystore/keystore.p12" ]; then
-            echo "KEYSTORE_P12=keystore/keystore.p12" >> $GITHUB_ENV
-          else
-            echo "KEYSTORE_P12=keystore/original.jks" >> $GITHUB_ENV
-          fi
+          keytool -importkeystore -srckeystore keystore/original.jks -srcstoretype JKS -destkeystore keystore/keystore.p12 -deststoretype PKCS12 -srcstorepass "${{ env.STORE_PASSWORD }}" -deststorepass "${{ env.STORE_PASSWORD }}" -srcalias "${{ env.KEY_ALIAS }}" -destalias "${{ env.KEY_ALIAS }}" -srckeypass "${{ env.KEY_PASSWORD }}" -destkeypass "${{ env.KEY_PASSWORD }}" > /dev/null 2>&1 || echo "⚠️ PKCS12変換失敗"
+          [ -f "keystore/keystore.p12" ] && echo "KEYSTORE_P12=keystore/keystore.p12" >> $GITHUB_ENV || echo "KEYSTORE_P12=keystore/original.jks" >> $GITHUB_ENV
 
       - name: Download Tools & LIMEs Module
         env:
@@ -117,13 +100,9 @@ jobs:
         run: |
           LATEST_LS_TAG=$(gh release list --repo JingMatrix/LSPatch --limit 1 --json tagName --jq '.[0].tagName')
           gh release download "$LATEST_LS_TAG" --repo JingMatrix/LSPatch --pattern "lspatch.jar" --output "lspatch.jar" --clobber
-          
           LATEST_NP_TAG=$(gh release list --repo 7723mod/NPatch --limit 1 --json tagName --jq '.[0].tagName')
-          gh release download "$LATEST_NP_TAG" --repo 7723mod/NPatch --pattern "NPatch-*-release.jar" --output "NPatch.jar" --clobber || \
-            wget -O NPatch.jar https://github.com/7723mod/NPatch/releases/download/v0.7.3/NPatch-v0.7.3-504-release.jar
-          
+          gh release download "$LATEST_NP_TAG" --repo 7723mod/NPatch --pattern "NPatch-*-release.jar" --output "NPatch.jar" --clobber || wget -O NPatch.jar https://github.com/7723mod/NPatch/releases/download/v0.7.3/NPatch-v0.7.3-504-release.jar
           wget -O APKEditor.jar "https://github.com/REAndroid/APKEditor/releases/download/V1.4.7/APKEditor-1.4.7.jar"
-          
           gh release download "${{ needs.check-release.outputs.lime_tag }}" --repo areteruhiro/LIMEs --pattern "*.apk" --output "module.apk" --clobber
 
       - name: Download LINE APK/APKM (${{ matrix.version }})
@@ -131,104 +110,68 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p download_tmp
-          
-          # バージョン名をそのままタグ名として指定してダウンロードを試みる
-          # タグ名が "15.12.2" の場合と "v15.12.2" の場合の両方に対応できるようにします
           TAG_NAME="${{ matrix.version }}"
-          
-          echo "Checking release tag: $TAG_NAME"
-          if gh release download "$TAG_NAME" --repo "$SOURCE_REPO" --pattern "*" --dir download_tmp; then
-            echo "Successfully downloaded from tag: $TAG_NAME"
-          elif gh release download "v$TAG_NAME" --repo "$SOURCE_REPO" --pattern "*" --dir download_tmp; then
-            echo "Successfully downloaded from tag: v$TAG_NAME"
-          else
-            echo "❌ Error: Release tag for version $TAG_NAME not found in $SOURCE_REPO"
-            exit 1
+          if ! gh release download "$TAG_NAME" --repo "$SOURCE_REPO" --pattern "*" --dir download_tmp; then
+            gh release download "v$TAG_NAME" --repo "$SOURCE_REPO" --pattern "*" --dir download_tmp
           fi
-          
-          # ダウンロードしたファイルの中からAPK/APKM等を探す
           FILE_PATH=$(find download_tmp -type f \( -name "*.apk" -o -name "*.apkm" -o -name "*.xapk" -o -name "*.apks" \) | head -n 1)
-          
-          if [ -z "$FILE_PATH" ]; then
-            echo "❌ Error: No APK file found in the downloaded assets."
-            exit 1
-          fi
-          
           mv "$FILE_PATH" raw_input.file
-          echo "Downloaded: $(basename raw_input.file)"
 
-      - name: Prepare APK (Merge & Maximize Version Code via Decode)
+      - name: Prepare APK (Merge & Maximize Version & Sync Label Name)
         run: |
-          # 1. 作業ディレクトリの準備
           mkdir -p apk_working_dir
-
-          # 2. 分割APK（APKMなど）か単体APKかを判別して処理
           if unzip -l raw_input.file | grep -q "base.apk"; then
-            echo "📦 Split APK detected. Merging..."
             unzip -o raw_input.file -d apk_working_dir
             java -jar APKEditor.jar m -i apk_working_dir -o merged_temp.apk
           else
-            echo "📄 Single APK detected."
             cp raw_input.file merged_temp.apk
           fi
-
-          # 3. デコードして XML 形式にする
-          echo "🛠 Decoding APK to XML..."
           java -jar APKEditor.jar d -t xml -i merged_temp.apk -o decoded_work
-
-          # 4. AndroidManifest.xml の versionCode を 2147483647 に自動置換 (sedを使用)
-          # 正規表現で android:versionCode="..." の数字部分を書き換える
-          echo "📝 Maximizing versionCode in AndroidManifest.xml..."
-          sed -i 's/android:versionCode="[0-9]*"/android:versionCode="2147483647"/' decoded_work/AndroidManifest.xml
           
-          # ついでに versionName も 999.99.99 にして「改造版」と判別しやすくする場合（任意）
-          # sed -i 's/android:versionName="[^"]*"/android:versionName="999.99.99"/' decoded_work/AndroidManifest.xml
+          # ★ Obtainium用に「ラベル-タグ名」をバージョンネームにする
+          # 例: Stable-LIMEs-v1.36.1.0.alpha
+          FULL_VER_NAME="${{ matrix.label }}-${{ needs.check-release.outputs.target_tag }}"
+          
+          sed -i 's/android:versionCode="[0-9]*"/android:versionCode="2147483647"/' decoded_work/AndroidManifest.xml
+          sed -i "s/android:versionName=\"[^\"]*\"/android:versionName=\"$FULL_VER_NAME\"/" decoded_work/AndroidManifest.xml
 
-          # 5. 再ビルドして1つのAPKにまとめる
-          echo "🏗 Re-building APK..."
           java -jar APKEditor.jar b -i decoded_work -o target.apk
 
-          # 6. 後片付け
-          rm merged_temp.apk
-          rm -rf decoded_work apk_working_dir
-          
-          echo "✅ Successfully created target.apk with max versionCode (2147483647)."
-
-      - name: Apply LSPatch & NPatch
+      - name: Apply LSPatch & NPatch (Naming by Label)
         run: |
           mkdir -p out_ls_local out_ls_embed out_np_local out_np_embed
 
+          # LSPatch Local
           java -Xmx4G -jar lspatch.jar target.apk -l 2 -f -o out_ls_local
           mv $(find out_ls_local -name "*.apk" | head -n 1) ls_local_unsigned.apk
 
+          # LSPatch Embed
           java -Xmx4G -jar lspatch.jar target.apk -m module.apk -l 2 -f -o out_ls_embed
           mv $(find out_ls_embed -name "*.apk" | head -n 1) ls_embed_unsigned.apk
 
+          # NPatch Local
           java -Xmx4G -jar NPatch.jar target.apk -k ${{ env.KEYSTORE_P12 }} ${{ env.STORE_PASSWORD }} ${{ env.KEY_ALIAS }} ${{ env.KEY_PASSWORD }} -f -o out_np_local
-          mv $(find out_np_local -name "*.apk" | head -n 1) "LINE-${{ matrix.version }}-NPatch-Local.apk"
+          mv $(find out_np_local -name "*.apk" | head -n 1) "${{ matrix.label }}-NPatch-Local.apk"
 
+          # NPatch Embed
           java -Xmx4G -jar NPatch.jar target.apk -m module.apk -k ${{ env.KEYSTORE_P12 }} ${{ env.STORE_PASSWORD }} ${{ env.KEY_ALIAS }} ${{ env.KEY_PASSWORD }} -f -o out_np_embed
-          mv $(find out_np_embed -name "*.apk" | head -n 1) "LINE-${{ matrix.version }}-NPatch-Embed.apk"
+          mv $(find out_np_embed -name "*.apk" | head -n 1) "${{ matrix.label }}-NPatch-Embed.apk"
 
       - name: Sign LSPatch APKs
         run: |
           BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | tail -1)
-
+          
           "$BUILD_TOOLS_DIR/zipalign" -p 4 ls_local_unsigned.apk ls_local_aligned.apk
-          "$BUILD_TOOLS_DIR/apksigner" sign --ks "${{ env.KEYSTORE_FILE }}" --ks-pass pass:"${{ env.STORE_PASSWORD }}" --ks-key-alias "${{ env.KEY_ALIAS }}" --key-pass pass:"${{ env.KEY_PASSWORD }}" --out "LINE-${{ matrix.version }}-LSPatch-Local.apk" ls_local_aligned.apk
+          "$BUILD_TOOLS_DIR/apksigner" sign --ks "${{ env.KEYSTORE_FILE }}" --ks-pass pass:"${{ env.STORE_PASSWORD }}" --ks-key-alias "${{ env.KEY_ALIAS }}" --key-pass pass:"${{ env.KEY_PASSWORD }}" --out "${{ matrix.label }}-LSPatch-Local.apk" ls_local_aligned.apk
 
           "$BUILD_TOOLS_DIR/zipalign" -p 4 ls_embed_unsigned.apk ls_embed_aligned.apk
-          "$BUILD_TOOLS_DIR/apksigner" sign --ks "${{ env.KEYSTORE_FILE }}" --ks-pass pass:"${{ env.STORE_PASSWORD }}" --ks-key-alias "${{ env.KEY_ALIAS }}" --key-pass pass:"${{ env.KEY_PASSWORD }}" --out "LINE-${{ matrix.version }}-LSPatch-Embed.apk" ls_embed_aligned.apk
+          "$BUILD_TOOLS_DIR/apksigner" sign --ks "${{ env.KEYSTORE_FILE }}" --ks-pass pass:"${{ env.STORE_PASSWORD }}" --ks-key-alias "${{ env.KEY_ALIAS }}" --key-pass pass:"${{ env.KEY_PASSWORD }}" --out "${{ matrix.label }}-LSPatch-Embed.apk" ls_embed_aligned.apk
 
       - name: Upload APKs to Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: patched-apks-${{ matrix.version }}
-          path: |
-            LINE-${{ matrix.version }}-LSPatch-Local.apk
-            LINE-${{ matrix.version }}-LSPatch-Embed.apk
-            LINE-${{ matrix.version }}-NPatch-Local.apk
-            LINE-${{ matrix.version }}-NPatch-Embed.apk
+          name: patched-apks-${{ matrix.label }}
+          path: "*.apk"
           retention-days: 1
 
   # ==========================================
