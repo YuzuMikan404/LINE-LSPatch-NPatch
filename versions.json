@@ -1,7 +1,6 @@
 [
   { "version": "15.12.2", "label": "Stable" },
   { "version": "15.12.2.o", "label": "TestO" },
-  { "version": "15.12.2.a", "label": "Testa" },
   { "version": "15.18.1", "label": "Beta" },
   { "version": "26.3.1", "label": "Experimental" }
 ]
