@@ -130,10 +130,32 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir download_tmp
-          gh release download --repo "$SOURCE_REPO" --pattern "*${{ matrix.version }}*" --dir download_tmp || exit 1
+          mkdir -p download_tmp
+          
+          # バージョン名をそのままタグ名として指定してダウンロードを試みる
+          # タグ名が "15.12.2" の場合と "v15.12.2" の場合の両方に対応できるようにします
+          TAG_NAME="${{ matrix.version }}"
+          
+          echo "Checking release tag: $TAG_NAME"
+          if gh release download "$TAG_NAME" --repo "$SOURCE_REPO" --pattern "*" --dir download_tmp; then
+            echo "Successfully downloaded from tag: $TAG_NAME"
+          elif gh release download "v$TAG_NAME" --repo "$SOURCE_REPO" --pattern "*" --dir download_tmp; then
+            echo "Successfully downloaded from tag: v$TAG_NAME"
+          else
+            echo "❌ Error: Release tag for version $TAG_NAME not found in $SOURCE_REPO"
+            exit 1
+          fi
+          
+          # ダウンロードしたファイルの中からAPK/APKM等を探す
           FILE_PATH=$(find download_tmp -type f \( -name "*.apk" -o -name "*.apkm" -o -name "*.xapk" -o -name "*.apks" \) | head -n 1)
+          
+          if [ -z "$FILE_PATH" ]; then
+            echo "❌ Error: No APK file found in the downloaded assets."
+            exit 1
+          fi
+          
           mv "$FILE_PATH" raw_input.file
+          echo "Downloaded: $(basename raw_input.file)"
 
       - name: Prepare APK (Merge & Maximize Version Code)
         run: |
