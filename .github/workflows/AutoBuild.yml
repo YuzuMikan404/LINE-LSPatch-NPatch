@@ -135,14 +135,24 @@ jobs:
           FILE_PATH=$(find download_tmp -type f \( -name "*.apk" -o -name "*.apkm" -o -name "*.xapk" -o -name "*.apks" \) | head -n 1)
           mv "$FILE_PATH" raw_input.file
 
-      - name: Prepare APK
+      - name: Prepare APK (Merge & Maximize Version Code)
         run: |
+          # 1. 分割APK（APKM/XAPK）の場合はマージする
           if unzip -l raw_input.file | grep -q "base.apk"; then
             unzip -o raw_input.file -d splitted_apk
-            java -jar APKEditor.jar m -i splitted_apk -o target.apk
+            java -jar APKEditor.jar m -i splitted_apk -o merged.apk
           else
-            mv raw_input.file target.apk
+            mv raw_input.file merged.apk
           fi
+
+          # 2. Version Code を最大値 (2147483647) に書き換える
+          # -vc : versionCode の指定
+          # -i  : 入力ファイル
+          # -o  : 出力ファイル
+          java -jar APKEditor.jar edit -i merged.apk -o target.apk -vc 2147483647
+          
+          # 不要になった中間ファイルを削除（任意）
+          rm merged.apk
 
       - name: Apply LSPatch & NPatch
         run: |
