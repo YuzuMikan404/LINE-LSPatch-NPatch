@@ -157,28 +157,42 @@ jobs:
           mv "$FILE_PATH" raw_input.file
           echo "Downloaded: $(basename raw_input.file)"
 
-      - name: Prepare APK (Merge & Maximize Version Code)
+      - name: Prepare APK (Merge & Maximize Version Code via Decode)
         run: |
-          # 準備：作業用ディレクトリの作成
+          # 1. 作業ディレクトリの準備
           mkdir -p apk_working_dir
 
+          # 2. 分割APK（APKMなど）か単体APKかを判別して処理
           if unzip -l raw_input.file | grep -q "base.apk"; then
-            # 1. 分割APK（APKMなど）の場合：展開して作業ディレクトリへ
+            echo "📦 Split APK detected. Merging..."
             unzip -o raw_input.file -d apk_working_dir
+            java -jar APKEditor.jar m -i apk_working_dir -o merged_temp.apk
           else
-            # 2. 単体APKの場合：そのまま作業ディレクトリへ（base.apkとして配置）
-            # APKEditorのmergeコマンドはディレクトリ内のbase.apkを探す仕様のため
-            cp raw_input.file apk_working_dir/base.apk
+            echo "📄 Single APK detected."
+            cp raw_input.file merged_temp.apk
           fi
 
-          # 3. APKEditor の merge (m) コマンドを実行
-          # 引数を修正: -vc ではなく --version-code を使用
-          java -jar APKEditor.jar m \
-            -i apk_working_dir \
-            -o target.apk \
-            --version-code 2147483647
+          # 3. デコードして XML 形式にする
+          echo "🛠 Decoding APK to XML..."
+          java -jar APKEditor.jar d -t xml -i merged_temp.apk -o decoded_work
+
+          # 4. AndroidManifest.xml の versionCode を 2147483647 に自動置換 (sedを使用)
+          # 正規表現で android:versionCode="..." の数字部分を書き換える
+          echo "📝 Maximizing versionCode in AndroidManifest.xml..."
+          sed -i 's/android:versionCode="[0-9]*"/android:versionCode="2147483647"/' decoded_work/AndroidManifest.xml
           
-          echo "✅ APK preparation and versionCode maximization (--version-code) completed."
+          # ついでに versionName も 999.99.99 にして「改造版」と判別しやすくする場合（任意）
+          # sed -i 's/android:versionName="[^"]*"/android:versionName="999.99.99"/' decoded_work/AndroidManifest.xml
+
+          # 5. 再ビルドして1つのAPKにまとめる
+          echo "🏗 Re-building APK..."
+          java -jar APKEditor.jar b -i decoded_work -o target.apk
+
+          # 6. 後片付け
+          rm merged_temp.apk
+          rm -rf decoded_work apk_working_dir
+          
+          echo "✅ Successfully created target.apk with max versionCode (2147483647)."
 
       - name: Apply LSPatch & NPatch
         run: |
