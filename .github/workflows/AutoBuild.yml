@@ -167,16 +167,18 @@ jobs:
             unzip -o raw_input.file -d apk_working_dir
           else
             # 2. 単体APKの場合：そのまま作業ディレクトリへ（base.apkとして配置）
+            # APKEditorのmergeコマンドはディレクトリ内のbase.apkを探す仕様のため
             cp raw_input.file apk_working_dir/base.apk
           fi
 
-          # 3. APKEditor の merge (m) コマンドで結合しつつ versionCode を最大化
-          # mergeコマンドは単体APKが入ったフォルダに対しても有効で、
-          # -vc オプションで versionCode を直接上書きできます。
-          java -jar APKEditor.jar m -i apk_working_dir -o target.apk -vc 2147483647
+          # 3. APKEditor の merge (m) コマンドを実行
+          # 引数を修正: -vc ではなく --version-code を使用
+          java -jar APKEditor.jar m \
+            -i apk_working_dir \
+            -o target.apk \
+            --version-code 2147483647
           
-          # 確認ログ
-          echo "✅ APK preparation and versionCode maximization completed."
+          echo "✅ APK preparation and versionCode maximization (--version-code) completed."
 
       - name: Apply LSPatch & NPatch
         run: |
