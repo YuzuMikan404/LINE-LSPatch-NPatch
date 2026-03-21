@@ -159,22 +159,24 @@ jobs:
 
       - name: Prepare APK (Merge & Maximize Version Code)
         run: |
-          # 1. 分割APK（APKM/XAPK）の場合はマージする
+          # 準備：作業用ディレクトリの作成
+          mkdir -p apk_working_dir
+
           if unzip -l raw_input.file | grep -q "base.apk"; then
-            unzip -o raw_input.file -d splitted_apk
-            java -jar APKEditor.jar m -i splitted_apk -o merged.apk
+            # 1. 分割APK（APKMなど）の場合：展開して作業ディレクトリへ
+            unzip -o raw_input.file -d apk_working_dir
           else
-            mv raw_input.file merged.apk
+            # 2. 単体APKの場合：そのまま作業ディレクトリへ（base.apkとして配置）
+            cp raw_input.file apk_working_dir/base.apk
           fi
 
-          # 2. Version Code を最大値 (2147483647) に書き換える
-          # -vc : versionCode の指定
-          # -i  : 入力ファイル
-          # -o  : 出力ファイル
-          java -jar APKEditor.jar edit -i merged.apk -o target.apk -vc 2147483647
+          # 3. APKEditor の merge (m) コマンドで結合しつつ versionCode を最大化
+          # mergeコマンドは単体APKが入ったフォルダに対しても有効で、
+          # -vc オプションで versionCode を直接上書きできます。
+          java -jar APKEditor.jar m -i apk_working_dir -o target.apk -vc 2147483647
           
-          # 不要になった中間ファイルを削除（任意）
-          rm merged.apk
+          # 確認ログ
+          echo "✅ APK preparation and versionCode maximization completed."
 
       - name: Apply LSPatch & NPatch
         run: |
