@@ -117,26 +117,26 @@ jobs:
           FILE_PATH=$(find download_tmp -type f \( -name "*.apk" -o -name "*.apkm" -o -name "*.xapk" -o -name "*.apks" \) | head -n 1)
           mv "$FILE_PATH" raw_input.file
 
-      - name: Prepare APK (Merge & Maximize Version & Sync Label Name)
+      - name: Sign LSPatch APKs
         run: |
-          mkdir -p apk_working_dir
-          if unzip -l raw_input.file | grep -q "base.apk"; then
-            unzip -o raw_input.file -d apk_working_dir
-            java -jar APKEditor.jar m -i apk_working_dir -o merged_temp.apk
-          else
-            cp raw_input.file merged_temp.apk
-          fi
-          java -jar APKEditor.jar d -t xml -i merged_temp.apk -o decoded_work
-          
-          # ★ Obtainium用に「ラベル-タグ名」をバージョンネームにする
-          # 例: Stable-LIMEs-v1.36.1.0.alpha
-          FULL_VER_NAME="${{ matrix.label }}-${{ needs.check-release.outputs.target_tag }}"
-          
-          sed -i 's/android:versionCode="[0-9]*"/android:versionCode="99999999"/' decoded_work/AndroidManifest.xml
-          sed -i "s/android:versionName=\"[^\"]*\"/android:versionName=\"$FULL_VER_NAME\"/" decoded_work/AndroidManifest.xml
+            BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | tail -1)
 
-          java -jar APKEditor.jar b -i decoded_work -o target.apk
+            "$BUILD_TOOLS_DIR/zipalign" -p 4 ls_local_unsigned.apk ls_local_aligned.apk
+            "$BUILD_TOOLS_DIR/apksigner" sign \
+              --ks "${{ env.KEYSTORE_P12 }}" \        # ← .bks → .p12 に変更
+              --ks-pass pass:"${{ env.STORE_PASSWORD }}" \
+              --ks-key-alias "${{ env.KEY_ALIAS }}" \
+              --key-pass pass:"${{ env.KEY_PASSWORD }}" \
+              --out "${{ matrix.label }}-LSPatch-Local.apk" ls_local_aligned.apk
 
+            "$BUILD_TOOLS_DIR/zipalign" -p 4 ls_embed_unsigned.apk ls_embed_aligned.apk
+            "$BUILD_TOOLS_DIR/apksigner" sign \
+              --ks "${{ env.KEYSTORE_P12 }}" \        # ← 同様
+              --ks-pass pass:"${{ env.STORE_PASSWORD }}" \
+              --ks-key-alias "${{ env.KEY_ALIAS }}" \
+              --key-pass pass:"${{ env.KEY_PASSWORD }}" \
+              --out "${{ matrix.label }}-LSPatch-Embed.apk" ls_embed_aligned.apk
+              
       - name: Apply LSPatch & NPatch (Naming by Label)
         run: |
           mkdir -p out_ls_local out_ls_embed out_np_local out_np_embed
