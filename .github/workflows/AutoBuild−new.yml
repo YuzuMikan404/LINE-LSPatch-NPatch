@@ -27,7 +27,7 @@ jobs:
       skip: ${{ steps.check.outputs.skip }}
       lime_tag: ${{ steps.check.outputs.lime_tag }}
       target_tag: ${{ steps.check.outputs.target_tag }}
-      matrix: ${{ steps.prepare-matrix.outputs.matrix }} # ★JSONを次のジョブに渡す
+      matrix: ${{ steps.prepare-matrix.outputs.matrix }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -35,7 +35,6 @@ jobs:
       - name: Read versions.json
         id: prepare-matrix
         run: |
-          # versions.json を読み込んで、改行を消したJSON文字列として出力
           MATRIX_JSON=$(jq -c . versions.json)
           echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
 
@@ -46,7 +45,7 @@ jobs:
         run: |
           LIME_TAG=$(gh release list --repo areteruhiro/LIMEs --limit 1 --json tagName --jq '.[0].tagName')
           TARGET_TAG="LIMEs-${LIME_TAG}"
-          
+
           echo "lime_tag=$LIME_TAG" >> $GITHUB_OUTPUT
           echo "target_tag=$TARGET_TAG" >> $GITHUB_OUTPUT
 
@@ -87,12 +86,37 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Prepare Keystore (JKS → PKCS12 for NPatch)
+      # BKS → PKCS12 変換（BouncyCastleプロバイダ使用）
+      - name: Prepare Keystore (BKS → PKCS12 for apksigner/NPatch)
         run: |
           mkdir -p keystore
-          cp "${{ env.KEYSTORE_FILE }}" keystore/original.jks
-          keytool -importkeystore -srckeystore keystore/original.jks -srcstoretype JKS -destkeystore keystore/keystore.p12 -deststoretype PKCS12 -srcstorepass "${{ env.STORE_PASSWORD }}" -deststorepass "${{ env.STORE_PASSWORD }}" -srcalias "${{ env.KEY_ALIAS }}" -destalias "${{ env.KEY_ALIAS }}" -srckeypass "${{ env.KEY_PASSWORD }}" -destkeypass "${{ env.KEY_PASSWORD }}" > /dev/null 2>&1 || echo "⚠️ PKCS12変換失敗"
-          [ -f "keystore/keystore.p12" ] && echo "KEYSTORE_P12=keystore/keystore.p12" >> $GITHUB_ENV || echo "KEYSTORE_P12=keystore/original.jks" >> $GITHUB_ENV
+
+          # BouncyCastleプロバイダをダウンロード（BKS形式の読み込みに必要）
+          wget -q -O bcprov.jar "https://repo1.maven.org/maven2/org/bouncycastle/bcprov-jdk18on/1.78/bcprov-jdk18on-1.78.jar"
+
+          keytool -importkeystore \
+            -srckeystore "${{ env.KEYSTORE_FILE }}" \
+            -srcstoretype BKS \
+            -srcprovidername BC \
+            -providerclass org.bouncycastle.jce.provider.BouncyCastleProvider \
+            -providerpath bcprov.jar \
+            -destkeystore keystore/keystore.p12 \
+            -deststoretype PKCS12 \
+            -srcstorepass "${{ env.STORE_PASSWORD }}" \
+            -deststorepass "${{ env.STORE_PASSWORD }}" \
+            -srcalias "${{ env.KEY_ALIAS }}" \
+            -destalias "${{ env.KEY_ALIAS }}" \
+            -srckeypass "${{ env.KEY_PASSWORD }}" \
+            -destkeypass "${{ env.KEY_PASSWORD }}" \
+            -noprompt
+
+          if [ -f "keystore/keystore.p12" ]; then
+            echo "✅ PKCS12変換成功"
+            echo "KEYSTORE_P12=keystore/keystore.p12" >> $GITHUB_ENV
+          else
+            echo "❌ PKCS12変換失敗"
+            exit 1
+          fi
 
       - name: Download Tools & LIMEs Module
         env:
@@ -117,55 +141,96 @@ jobs:
           FILE_PATH=$(find download_tmp -type f \( -name "*.apk" -o -name "*.apkm" -o -name "*.xapk" -o -name "*.apks" \) | head -n 1)
           mv "$FILE_PATH" raw_input.file
 
-      - name: Sign LSPatch APKs
+      - name: Prepare APK (Merge & Rewrite Version)
         run: |
-            BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | tail -1)
+          mkdir -p apk_working_dir
+          if unzip -l raw_input.file | grep -q "base.apk"; then
+            unzip -o raw_input.file -d apk_working_dir
+            java -jar APKEditor.jar m -i apk_working_dir -o merged_temp.apk
+          else
+            cp raw_input.file merged_temp.apk
+          fi
+          java -jar APKEditor.jar d -t xml -i merged_temp.apk -o decoded_work
 
-            "$BUILD_TOOLS_DIR/zipalign" -p 4 ls_local_unsigned.apk ls_local_aligned.apk
-            "$BUILD_TOOLS_DIR/apksigner" sign \
-              --ks "${{ env.KEYSTORE_P12 }}" \        # ← .bks → .p12 に変更
-              --ks-pass pass:"${{ env.STORE_PASSWORD }}" \
-              --ks-key-alias "${{ env.KEY_ALIAS }}" \
-              --key-pass pass:"${{ env.KEY_PASSWORD }}" \
-              --out "${{ matrix.label }}-LSPatch-Local.apk" ls_local_aligned.apk
+          # versionCode: 元の値より大きくPlay Storeの自動更新を抑制しつつ異常値と判定されない値
+          sed -i 's/android:versionCode="[0-9]*"/android:versionCode="99999999"/' decoded_work/AndroidManifest.xml
 
-            "$BUILD_TOOLS_DIR/zipalign" -p 4 ls_embed_unsigned.apk ls_embed_aligned.apk
-            "$BUILD_TOOLS_DIR/apksigner" sign \
-              --ks "${{ env.KEYSTORE_P12 }}" \        # ← 同様
-              --ks-pass pass:"${{ env.STORE_PASSWORD }}" \
-              --ks-key-alias "${{ env.KEY_ALIAS }}" \
-              --key-pass pass:"${{ env.KEY_PASSWORD }}" \
-              --out "${{ matrix.label }}-LSPatch-Embed.apk" ls_embed_aligned.apk
-              
-      - name: Apply LSPatch & NPatch (Naming by Label)
+          # versionName: Obtainium用に「ラベル-LIMEsタグ」形式にする
+          # 例: Stable-LIMEs-v1.36.1.0.alpha
+          FULL_VER_NAME="${{ matrix.label }}-${{ needs.check-release.outputs.target_tag }}"
+          sed -i "s/android:versionName=\"[^\"]*\"/android:versionName=\"$FULL_VER_NAME\"/" decoded_work/AndroidManifest.xml
+
+          java -jar APKEditor.jar b -i decoded_work -o target.apk
+
+      - name: Apply LSPatch & NPatch
         run: |
           mkdir -p out_ls_local out_ls_embed out_np_local out_np_embed
 
-          # LSPatch Local
+          # LSPatch Local（未署名で出力、後段のapksignerで署名）
           java -Xmx4G -jar lspatch.jar target.apk -l 2 -f -o out_ls_local
-          mv $(find out_ls_local -name "*.apk" | head -n 1) ls_local_unsigned.apk
+          echo "=== out_ls_local ==="
+          ls -la out_ls_local/
+          FOUND=$(find out_ls_local -name "*.apk" | head -n 1)
+          [ -z "$FOUND" ] && echo "❌ LSPatch Local: 出力ファイルが見つかりません" && exit 1
+          mv "$FOUND" ls_local_unsigned.apk
+          echo "✅ LSPatch Local: $FOUND"
 
-          # LSPatch Embed
+          # LSPatch Embed（未署名で出力、後段のapksignerで署名）
           java -Xmx4G -jar lspatch.jar target.apk -m module.apk -l 2 -f -o out_ls_embed
-          mv $(find out_ls_embed -name "*.apk" | head -n 1) ls_embed_unsigned.apk
+          echo "=== out_ls_embed ==="
+          ls -la out_ls_embed/
+          FOUND=$(find out_ls_embed -name "*.apk" | head -n 1)
+          [ -z "$FOUND" ] && echo "❌ LSPatch Embed: 出力ファイルが見つかりません" && exit 1
+          mv "$FOUND" ls_embed_unsigned.apk
+          echo "✅ LSPatch Embed: $FOUND"
 
           # NPatch Local
-          java -Xmx4G -jar NPatch.jar target.apk -k ${{ env.KEYSTORE_P12 }} ${{ env.STORE_PASSWORD }} ${{ env.KEY_ALIAS }} ${{ env.KEY_PASSWORD }} -f -o out_np_local
-          mv $(find out_np_local -name "*.apk" | head -n 1) "${{ matrix.label }}-NPatch-Local.apk"
+          java -Xmx4G -jar NPatch.jar target.apk \
+            -k "${{ env.KEYSTORE_P12 }}" "${{ env.STORE_PASSWORD }}" "${{ env.KEY_ALIAS }}" "${{ env.KEY_PASSWORD }}" \
+            -f -o out_np_local
+          echo "=== out_np_local ==="
+          ls -la out_np_local/
+          FOUND=$(find out_np_local -name "*.apk" | head -n 1)
+          [ -z "$FOUND" ] && echo "❌ NPatch Local: 出力ファイルが見つかりません" && exit 1
+          mv "$FOUND" "${{ matrix.label }}-NPatch-Local.apk"
+          echo "✅ NPatch Local 完了"
 
           # NPatch Embed
-          java -Xmx4G -jar NPatch.jar target.apk -m module.apk -k ${{ env.KEYSTORE_P12 }} ${{ env.STORE_PASSWORD }} ${{ env.KEY_ALIAS }} ${{ env.KEY_PASSWORD }} -f -o out_np_embed
-          mv $(find out_np_embed -name "*.apk" | head -n 1) "${{ matrix.label }}-NPatch-Embed.apk"
+          java -Xmx4G -jar NPatch.jar target.apk -m module.apk \
+            -k "${{ env.KEYSTORE_P12 }}" "${{ env.STORE_PASSWORD }}" "${{ env.KEY_ALIAS }}" "${{ env.KEY_PASSWORD }}" \
+            -f -o out_np_embed
+          echo "=== out_np_embed ==="
+          ls -la out_np_embed/
+          FOUND=$(find out_np_embed -name "*.apk" | head -n 1)
+          [ -z "$FOUND" ] && echo "❌ NPatch Embed: 出力ファイルが見つかりません" && exit 1
+          mv "$FOUND" "${{ matrix.label }}-NPatch-Embed.apk"
+          echo "✅ NPatch Embed 完了"
 
+      # LSPatch出力をzipalign → apksignerで署名（PKCS12キーストア使用）
       - name: Sign LSPatch APKs
         run: |
           BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | tail -1)
-          
+          echo "Using build-tools: $BUILD_TOOLS_DIR"
+
           "$BUILD_TOOLS_DIR/zipalign" -p 4 ls_local_unsigned.apk ls_local_aligned.apk
-          "$BUILD_TOOLS_DIR/apksigner" sign --ks "${{ env.KEYSTORE_FILE }}" --ks-pass pass:"${{ env.STORE_PASSWORD }}" --ks-key-alias "${{ env.KEY_ALIAS }}" --key-pass pass:"${{ env.KEY_PASSWORD }}" --out "${{ matrix.label }}-LSPatch-Local.apk" ls_local_aligned.apk
+          "$BUILD_TOOLS_DIR/apksigner" sign \
+            --ks "${{ env.KEYSTORE_P12 }}" \
+            --ks-pass pass:"${{ env.STORE_PASSWORD }}" \
+            --ks-key-alias "${{ env.KEY_ALIAS }}" \
+            --key-pass pass:"${{ env.KEY_PASSWORD }}" \
+            --out "${{ matrix.label }}-LSPatch-Local.apk" \
+            ls_local_aligned.apk
+          echo "✅ LSPatch Local 署名完了"
 
           "$BUILD_TOOLS_DIR/zipalign" -p 4 ls_embed_unsigned.apk ls_embed_aligned.apk
-          "$BUILD_TOOLS_DIR/apksigner" sign --ks "${{ env.KEYSTORE_FILE }}" --ks-pass pass:"${{ env.STORE_PASSWORD }}" --ks-key-alias "${{ env.KEY_ALIAS }}" --key-pass pass:"${{ env.KEY_PASSWORD }}" --out "${{ matrix.label }}-LSPatch-Embed.apk" ls_embed_aligned.apk
+          "$BUILD_TOOLS_DIR/apksigner" sign \
+            --ks "${{ env.KEYSTORE_P12 }}" \
+            --ks-pass pass:"${{ env.STORE_PASSWORD }}" \
+            --ks-key-alias "${{ env.KEY_ALIAS }}" \
+            --key-pass pass:"${{ env.KEY_PASSWORD }}" \
+            --out "${{ matrix.label }}-LSPatch-Embed.apk" \
+            ls_embed_aligned.apk
+          echo "✅ LSPatch Embed 署名完了"
 
       - name: Upload APKs to Artifact
         uses: actions/upload-artifact@v4
@@ -200,27 +265,20 @@ jobs:
         env:
           LIME_TAG: ${{ needs.check-release.outputs.lime_tag }}
         run: |
-          # 1. versions.json から Markdown のリスト形式を生成
-          # 例: - **安定版 (Stable):** `15.12.2`
           VERSION_LIST_MD=$(jq -r '.[] | "- **\(.label):** `\(.version)`"' versions.json)
-          
-          # 2. Pythonを使ってテンプレート内の変数を安全に置換する
-          # (sedだと複数行のリスト置換でエラーになりやすいため、Pythonが確実)
+
           python3 -c "
           import os
-          
-          # テンプレート読み込み
+
           with open('release_template.md', 'r', encoding='utf-8') as f:
               content = f.read()
-          
-          # プレースホルダーを環境変数や生成したリストで置換
+
           lime_tag = os.environ['LIME_TAG']
           version_list = \"\"\"$VERSION_LIST_MD\"\"\"
-          
+
           content = content.replace('{{LIME_TAG}}', lime_tag)
           content = content.replace('{{VERSION_LIST}}', version_list)
-          
-          # 結果を書き出し
+
           with open('final_release_body.md', 'w', encoding='utf-8') as f:
               f.write(content)
           "
