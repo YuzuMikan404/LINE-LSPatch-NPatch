@@ -153,7 +153,7 @@ jobs:
           java -jar APKEditor.jar d -t xml -i merged_temp.apk -o decoded_work
 
           # versionCode: 元の値より大きくPlay Storeの自動更新を抑制しつつ異常値と判定されない値
-          sed -i 's/android:versionCode="[0-9]*"/android:versionCode="99999999"/' decoded_work/AndroidManifest.xml
+          sed -i 's/android:versionCode="[0-9]*"/android:versionCode="999999999"/' decoded_work/AndroidManifest.xml
 
           # versionName: Obtainium用に「ラベル-LIMEsタグ」形式にする
           # 例: Stable-LIMEs-v1.36.1.0.alpha
