@@ -1,5 +1,17 @@
 # LINE-LSPatch-NPatch
 
-最新の LIMEsをリリース記載の各バージョンのLINEに適用した自動リリースリポジトリ。
+最新の LIMEs をリリース記載の各バージョンのLINEに適用した自動リリースリポジトリ。
+
+
 LINE APK ソース： https://github.com/YuzuMikan404/LINE-APK/releases
-（APK Mirrorから取ってきています）
+
+自分でダウンロードしアップロード。
+TestO以外はAPK Mirrorから取ってきています
+
+## このリポジトリの作成経緯
+前からLIMEsには通知が届かない不具合があるため、これがAPK由来のものなのか自分の環境で切り分けるために作成。
+
+署名は本家LIMEsのDiscordのリリースで配布されているAPKと同じものを使用しているので署名は同じはず…？
+
+## TestOについて
+これはPC版サイトのLINE公式サイトからゲットできるarmeabi-v7a（32bit）のAPKのことです。
