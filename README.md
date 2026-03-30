@@ -1,6 +1,6 @@
 # LINE-LSPatch-NPatch
 
-最新の LIMEs をリリース記載の各バージョンのLINEに適用した自動リリースリポジトリ。
+最新の LIMEs を各リリースに記載のバージョンのLINEにLSPatchおよびNPatchを適用した自動リリースリポジトリ。
 
 
 LINE APK ソース： https://github.com/YuzuMikan404/LINE-APK/releases
