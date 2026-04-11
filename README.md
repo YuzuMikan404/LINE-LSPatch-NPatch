@@ -1,5 +1,9 @@
 # LINE-LSPatch-NPatch
 
+## 重要
+
+ソース元のLIMEsのリポジトリが削除されたため、一度パブリックアーカイブとします。
+
 最新の LIMEs を各リリースに記載のバージョンのLINEにLSPatchおよびNPatchを適用した自動リリースリポジトリ。
 
 
